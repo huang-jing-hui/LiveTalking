@@ -290,6 +290,7 @@ async def post(url,data):
         logger.info(f'Error: {e}')
 
 async def run(push_url,sessionid):
+    print("push_url:",push_url)
     nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
     nerfreals[sessionid] = nerfreal
 
@@ -306,6 +307,9 @@ async def run(push_url,sessionid):
     player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
+    for transceiver in pc.getTransceivers():
+        if transceiver.sender == audio_sender or transceiver.sender == video_sender:
+            transceiver.direction = "sendonly"
 
     await pc.setLocalDescription(await pc.createOffer())
     answer = await post(push_url,pc.localDescription.sdp)
@@ -344,7 +348,7 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='musetalk') #musetalk wav2lip ultralight
 
     parser.add_argument('--transport', type=str, default='rtcpush') #webrtc rtcpush virtualcam
-    parser.add_argument('--push_url', type=str, default='http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream') #rtmp://localhost/live/livestream
+    parser.add_argument('--push_url', type=str, default='http://192.168.110.137:1985/rtc/v1/whip/?app=live&stream=livestream') #rtmp://localhost/live/livestream
 
     parser.add_argument('--max_session', type=int, default=1)  #multi session count
     parser.add_argument('--listenport', type=int, default=8010, help="web listen port")

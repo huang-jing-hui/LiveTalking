@@ -15,10 +15,10 @@ parser.add_argument('--avatar_id', default='wav2lip_avatar1', type=str)
 parser.add_argument('--video_path', default='', type=str)
 parser.add_argument('--nosmooth', default=False, action='store_true',
 					help='Prevent smoothing face detections over a short temporal window')
-parser.add_argument('--pads', nargs='+', type=int, default=[0, 10, 0, 0], 
+parser.add_argument('--pads', nargs='+', type=int, default=[0, 10, 0, 0],
 					help='Padding (top, bottom, left, right). Please adjust to include chin at least')
-parser.add_argument('--face_det_batch_size', type=int, 
-					help='Batch size for face detection', default=16)
+parser.add_argument('--face_det_batch_size', type=int,
+					help='Batch size for face detection', default=4)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -36,7 +36,11 @@ def video2imgs(vid_path, save_path, ext = '.png',cut_frame = 10000000):
             break
         ret, frame = cap.read()
         if ret:
-            cv2.putText(frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+            if cv2.mean(frame)[0] < 10:
+                print(f"Detected and skipping black frame at index {count}")
+                count += 1
+                continue
+            #cv2.putText(frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
             cv2.imwrite(f"{save_path}/{count:08d}.png", frame)
             count += 1
         else:
@@ -60,18 +64,18 @@ def get_smoothened_boxes(boxes, T):
 	return boxes
 
 def face_detect(images):
-	detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D, 
+	detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D,
 											flip_input=False, device=device)
 
 	batch_size = args.face_det_batch_size
-	
+
 	while 1:
 		predictions = []
 		try:
 			for i in tqdm(range(0, len(images), batch_size)):
 				predictions.extend(detector.get_detections_for_batch(np.array(images[i:i + batch_size])))
 		except RuntimeError:
-			if batch_size == 1: 
+			if batch_size == 1:
 				raise RuntimeError('Image too big to run face detection on GPU. Please use the --resize_factor argument')
 			batch_size //= 2
 			print('Recovering from OOM error; New batch size: {}'.format(batch_size))
@@ -89,7 +93,7 @@ def face_detect(images):
 		y2 = min(image.shape[0], rect[3] + pady2)
 		x1 = max(0, rect[0] - padx1)
 		x2 = min(image.shape[1], rect[2] + padx2)
-		
+
 		results.append([x1, y1, x2, y2])
 
 	boxes = np.array(results)
@@ -97,12 +101,12 @@ def face_detect(images):
 	results = [[image[y1: y2, x1:x2], (y1, y2, x1, x2)] for image, (x1, y1, x2, y2) in zip(images, boxes)]
 
 	del detector
-	return results 
+	return results
 
 if __name__ == "__main__":
     avatar_path = f"./results/avatars/{args.avatar_id}"
-    full_imgs_path = f"{avatar_path}/full_imgs" 
-    face_imgs_path = f"{avatar_path}/face_imgs" 
+    full_imgs_path = f"{avatar_path}/full_imgs"
+    face_imgs_path = f"{avatar_path}/face_imgs"
     coords_path = f"{avatar_path}/coords.pkl"
     osmakedirs([avatar_path,full_imgs_path,face_imgs_path])
     print(args)
@@ -112,15 +116,15 @@ if __name__ == "__main__":
     input_img_list = sorted(glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]')))
 
     frames = read_imgs(input_img_list)
-    face_det_results = face_detect(frames) 
+    face_det_results = face_detect(frames)
     coord_list = []
     idx = 0
-    for frame,coords in face_det_results:        
+    for frame,coords in face_det_results:
         #x1, y1, x2, y2 = bbox
         resized_crop_frame = cv2.resize(frame,(args.img_size, args.img_size)) #,interpolation = cv2.INTER_LANCZOS4)
         cv2.imwrite(f"{face_imgs_path}/{idx:08d}.png", resized_crop_frame)
         coord_list.append(coords)
         idx = idx + 1
-	
+
     with open(coords_path, 'wb') as f:
         pickle.dump(coord_list, f)
