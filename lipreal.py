@@ -218,14 +218,26 @@ class LipReal(BaseReal):
         return combine_frame
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
+        '''
+        启动Wav2Lip数字人实时渲染流程
+
+        Args:
+            quit_event: 退出事件，用于控制线程生命周期
+            loop: asyncio事件循环，用于异步处理
+            audio_track: 音频轨道，用于发送音频数据
+            video_track: 视频轨道，用于发送视频数据
+        '''
         #if self.opt.asr:
         #     self.asr.warm_up()
 
+        # 启动TTS文本转语音处理线程
         self.tts.render(quit_event)
+        # 初始化自定义索引
         self.init_customindex()
+        # 启动音视频帧处理线程
         process_thread = Thread(target=self.process_frames, args=(quit_event,loop,audio_track,video_track))
         process_thread.start()
-
+        # 启动推理线程，处理音频特征并生成视频帧
         Thread(target=inference, args=(quit_event,self.batch_size,self.face_list_cycle,
                                            self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
                                            self.model,)).start()  #mp.Process
@@ -235,22 +247,26 @@ class LipReal(BaseReal):
         totaltime=0
         _starttime=time.perf_counter()
         #_totalframe=0
-        while not quit_event.is_set(): 
+        # 主循环：持续处理音频输入
+        while not quit_event.is_set():
             # update texture every frame
             # audio stream thread...
             t = time.perf_counter()
+            # 处理音频输入，提取特征
             self.asr.run_step()
 
+            # 控制视频队列大小，避免积压过多帧
             # if video_track._queue.qsize()>=2*self.opt.batch_size:
             #     print('sleep qsize=',video_track._queue.qsize())
             #     time.sleep(0.04*video_track._queue.qsize()*0.8)
             if video_track and video_track._queue.qsize()>=5:
                 logger.debug('sleep qsize=%d',video_track._queue.qsize())
                 time.sleep(0.04*video_track._queue.qsize()*0.8)
-                
+
             # delay = _starttime+_totalframe*0.04-time.perf_counter() #40ms
             # if delay > 0:
             #     time.sleep(delay)
         #self.render_event.clear() #end infer process render
         logger.info('lipreal thread stop')
+
             

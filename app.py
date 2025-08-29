@@ -16,24 +16,26 @@
 ###############################################################################
 
 # server.py
-from flask import Flask, render_template,send_from_directory,request, jsonify
+from flask import Flask, render_template, send_from_directory, request, jsonify
 from flask_sockets import Sockets
 import base64
 import json
-#import gevent
-#from gevent import pywsgi
-#from geventwebsocket.handler import WebSocketHandler
+# import gevent
+# from gevent import pywsgi
+# from geventwebsocket.handler import WebSocketHandler
 import re
 import numpy as np
-from threading import Thread,Event
-#import multiprocessing
+from threading import Thread, Event
+# import multiprocessing
 import torch.multiprocessing as mp
 
 from aiohttp import web
 import aiohttp
 import aiohttp_cors
-from aiortc import RTCPeerConnection, RTCSessionDescription,RTCIceServer,RTCConfiguration
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCConfiguration
 from aiortc.rtcrtpsender import RTCRtpSender
+
+from vllm import llm_response_with_video, llm_response_with_images
 from webrtc import HumanPlayer
 from basereal import BaseReal
 from llm import llm_response
@@ -47,41 +49,42 @@ from typing import Dict
 from logger import logger
 import gc
 
-
 app = Flask(__name__)
-#sockets = Sockets(app)
-nerfreals:Dict[int, BaseReal] = {} #sessionid:BaseReal
+# sockets = Sockets(app)
+nerfreals: Dict[int, BaseReal] = {}  # sessionid:BaseReal
 opt = None
 model = None
 avatar = None
-        
 
 #####webrtc###############################
 pcs = set()
 
-def randN(N)->int:
+
+def randN(N) -> int:
     '''生成长度为 N的随机数 '''
     min = pow(10, N - 1)
     max = pow(10, N)
     return random.randint(min, max - 1)
 
-def build_nerfreal(sessionid:int)->BaseReal:
-    opt.sessionid=sessionid
+
+def build_nerfreal(sessionid: int) -> BaseReal:
+    opt.sessionid = sessionid
     if opt.model == 'wav2lip':
         from lipreal import LipReal
-        nerfreal = LipReal(opt,model,avatar)
+        nerfreal = LipReal(opt, model, avatar)
     elif opt.model == 'musetalk':
         from musereal import MuseReal
-        nerfreal = MuseReal(opt,model,avatar)
+        nerfreal = MuseReal(opt, model, avatar)
     # elif opt.model == 'ernerf':
     #     from nerfreal import NeRFReal
     #     nerfreal = NeRFReal(opt,model,avatar)
     elif opt.model == 'ultralight':
         from lightreal import LightReal
-        nerfreal = LightReal(opt,model,avatar)
+        nerfreal = LightReal(opt, model, avatar)
     return nerfreal
 
-#@app.route('/offer', methods=['POST'])
+
+# @app.route('/offer', methods=['POST'])
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
@@ -94,13 +97,13 @@ async def offer(request):
     #             {"code": -1, "msg": "reach max session"}
     #         ),
     #     )
-    sessionid = randN(6) #len(nerfreals)
+    sessionid = randN(6)  # len(nerfreals)
     nerfreals[sessionid] = None
-    logger.info('sessionid=%d, session num=%d',sessionid,len(nerfreals))
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+    logger.info('sessionid=%d, session num=%d', sessionid, len(nerfreals))
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal, sessionid)
     nerfreals[sessionid] = nerfreal
-    
-    #ice_server = RTCIceServer(urls='stun:stun.l.google.com:19302')
+
+    # ice_server = RTCIceServer(urls='stun:stun.l.google.com:19302')
     ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
     pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
     pcs.add(pc)
@@ -132,33 +135,34 @@ async def offer(request):
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    #return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+    # return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
     return web.Response(
         content_type="application/json",
         text=json.dumps(
-            {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "sessionid":sessionid}
+            {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "sessionid": sessionid}
         ),
     )
 
-async def human(request):
+
+async def human_v1(request):
     try:
         params = await request.json()
 
-        sessionid = params.get('sessionid',0)
+        sessionid = params.get('sessionid', 0)
         if params.get('interrupt'):
             nerfreals[sessionid].flush_talk()
 
-        if params['type']=='echo':
+        if params['type'] == 'echo':
             nerfreals[sessionid].put_msg_txt(params['text'])
-        elif params['type']=='chat':
-            asyncio.get_event_loop().run_in_executor(None, llm_response, params['text'],nerfreals[sessionid])                         
-            #nerfreals[sessionid].put_msg_txt(res)
+        elif params['type'] == 'chat':
+            asyncio.get_event_loop().run_in_executor(None, llm_response, params['text'], nerfreals[sessionid])
+            # nerfreals[sessionid].put_msg_txt(res)
 
         return web.Response(
             content_type="application/json",
             text=json.dumps(
-                {"code": 0, "msg":"ok"}
+                {"code": 0, "msg": "ok"}
             ),
         )
     except Exception as e:
@@ -168,19 +172,158 @@ async def human(request):
             text=json.dumps(
                 {"code": -1, "msg": str(e)}
             ),
+        )
+
+
+async def human_v2(request):
+    params = {}
+    video_data = None  # 用于存储视频二进制数据
+
+    try:
+        # 根据 Content-Type 判断请求类型
+        if request.content_type == 'application/json':
+            params = await request.json()
+        elif request.content_type.startswith('multipart/form-data'):
+            reader = await request.multipart()
+            async for field in reader:
+                if field.name == 'text':
+                    params['text'] = (await field.read()).decode('utf-8')
+                elif field.name == 'type':
+                    params['type'] = (await field.read()).decode('utf-8')
+                elif field.name == 'interrupt':
+                    # FormData 中的布尔值通常作为字符串 'true'/'false' 传递
+                    params['interrupt'] = (await field.read()).decode('utf-8').lower() == 'true'
+                elif field.name == 'sessionid':
+                    params['sessionid'] = int((await field.read()).decode('utf-8'))
+                elif field.name == 'video' and field.filename:
+                    # 读取视频文件内容
+                    video_data = await field.read()
+                    print(f"Received video file: {field.filename}, Content-Type: {field.headers.get('Content-Type')}")
+                # 可以添加其他字段的处理
+        else:
+            raise ValueError(f"Unsupported Content-Type: {request.content_type}")
+
+        sessionid = params.get('sessionid', 0)
+        # 确保 sessionid 对应的 nerfreals 实例存在
+        if sessionid not in nerfreals:
+            # 或者您可以选择创建新的实例，根据您的业务逻辑
+            # nerfreals[sessionid] = NerfReal(sessionid)
+            raise ValueError(f"Invalid sessionid: {sessionid}")
+
+        if params.get('interrupt'):
+            # flush_talk 应该是异步的
+            nerfreals[sessionid].flush_talk()
+
+        if params.get('type') == 'echo':
+            # put_msg_txt 应该是异步的
+            nerfreals[sessionid].put_msg_txt(params.get('text', ''))
+        elif params.get('type') == 'chat':
+            text = params.get('text', '')
+            if not text:  # 文本为空，可能是纯视频上传，或者有误
+                return web.Response(
+                    content_type="application/json",
+                    text=json.dumps({"code": -1, "msg": "Chat message text is empty."}),
+                )
+
+            if video_data:
+
+                # 如果有视频数据，调用处理视频的LLM函数
+                asyncio.get_event_loop().run_in_executor(
+                    None, llm_response_with_video, text, video_data, nerfreals[sessionid]
+                )
+            else:
+                # 只有文本数据，调用普通LLM函数
+                asyncio.get_event_loop().run_in_executor(
+                    None, llm_response, text, nerfreals[sessionid]
+                )
+
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": 0, "msg": "ok"}),
+        )
+    except Exception as e:
+        logger.exception('Exception in human endpoint:')
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": -1, "msg": str(e)}),
+        )
+
+
+# --- 重构后的 human 接口 ---
+async def human(request):
+    try:
+        # 关键改动 1: 强制要求 Content-Type 为 application/json
+        if not request.content_type == 'application/json':
+            raise web.HTTPUnsupportedMediaType(
+                reason=f"Expected Content-Type 'application/json', but got '{request.content_type}'"
+            )
+
+        params = await request.json()
+
+        # 关键改动 2: 从 JSON 中提取图片列表
+        images_base64_list = params.get('images', [])
+        print(f"Received {len(images_base64_list)} images for chat.,images_base64_list:{images_base64_list}")
+
+        sessionid = params.get('sessionid', 0)
+        if sessionid not in nerfreals:
+            raise ValueError(f"Invalid sessionid: {sessionid}")
+
+        if params.get('interrupt'):
+            nerfreals[sessionid].flush_talk()
+
+        if params.get('type') == 'echo':
+            await nerfreals[sessionid].put_msg_txt(params.get('text', ''))
+
+        elif params.get('type') == 'chat':
+            text = params.get('text', '')
+            if not text:
+                return web.Response(
+                    content_type="application/json",
+                    text=json.dumps({"code": -1, "msg": "Chat message text is empty."}),
+                )
+
+            # 关键改动 3: 根据图片列表是否存在来决定调用哪个 LLM 函数
+            if images_base64_list:
+                logger.info(f"Received {len(images_base64_list)} images for chat.")
+                # 调用新的处理图片的函数
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    llm_response_with_images,  # <--- 调用新函数
+                    text,
+                    images_base64_list,
+                    nerfreals[sessionid]
+                )
+            else:
+                # 只有文本数据，调用普通LLM函数
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    llm_response,
+                    text,
+                    nerfreals[sessionid]
+                )
+
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": 0, "msg": "ok"}),
+        )
+    except Exception as e:
+        logger.exception('Exception in human endpoint:')
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": -1, "msg": str(e)}),
         )
 
 async def interrupt_talk(request):
     try:
         params = await request.json()
 
-        sessionid = params.get('sessionid',0)
+        sessionid = params.get('sessionid', 0)
         nerfreals[sessionid].flush_talk()
-        
+
         return web.Response(
             content_type="application/json",
             text=json.dumps(
-                {"code": 0, "msg":"ok"}
+                {"code": 0, "msg": "ok"}
             ),
         )
     except Exception as e:
@@ -192,19 +335,20 @@ async def interrupt_talk(request):
             ),
         )
 
+
 async def humanaudio(request):
     try:
-        form= await request.post()
-        sessionid = int(form.get('sessionid',0))
+        form = await request.post()
+        sessionid = int(form.get('sessionid', 0))
         fileobj = form["file"]
-        filename=fileobj.filename
-        filebytes=fileobj.file.read()
+        filename = fileobj.filename
+        filebytes = fileobj.file.read()
         nerfreals[sessionid].put_audio_file(filebytes)
 
         return web.Response(
             content_type="application/json",
             text=json.dumps(
-                {"code": 0, "msg":"ok"}
+                {"code": 0, "msg": "ok"}
             ),
         )
     except Exception as e:
@@ -215,18 +359,19 @@ async def humanaudio(request):
                 {"code": -1, "msg": str(e)}
             ),
         )
+
 
 async def set_audiotype(request):
     try:
         params = await request.json()
 
-        sessionid = params.get('sessionid',0)    
-        nerfreals[sessionid].set_custom_state(params['audiotype'],params['reinit'])
+        sessionid = params.get('sessionid', 0)
+        nerfreals[sessionid].set_custom_state(params['audiotype'], params['reinit'])
 
         return web.Response(
             content_type="application/json",
             text=json.dumps(
-                {"code": 0, "msg":"ok"}
+                {"code": 0, "msg": "ok"}
             ),
         )
     except Exception as e:
@@ -237,21 +382,22 @@ async def set_audiotype(request):
                 {"code": -1, "msg": str(e)}
             ),
         )
+
 
 async def record(request):
     try:
         params = await request.json()
 
-        sessionid = params.get('sessionid',0)
-        if params['type']=='start_record':
+        sessionid = params.get('sessionid', 0)
+        if params['type'] == 'start_record':
             # nerfreals[sessionid].put_msg_txt(params['text'])
             nerfreals[sessionid].start_recording()
-        elif params['type']=='end_record':
+        elif params['type'] == 'end_record':
             nerfreals[sessionid].stop_recording()
         return web.Response(
             content_type="application/json",
             text=json.dumps(
-                {"code": 0, "msg":"ok"}
+                {"code": 0, "msg": "ok"}
             ),
         )
     except Exception as e:
@@ -263,10 +409,11 @@ async def record(request):
             ),
         )
 
+
 async def is_speaking(request):
     params = await request.json()
 
-    sessionid = params.get('sessionid',0)
+    sessionid = params.get('sessionid', 0)
     return web.Response(
         content_type="application/json",
         text=json.dumps(
@@ -281,17 +428,19 @@ async def on_shutdown(app):
     await asyncio.gather(*coros)
     pcs.clear()
 
-async def post(url,data):
+
+async def post(url, data):
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url,data=data) as response:
+            async with session.post(url, data=data) as response:
                 return await response.text()
     except aiohttp.ClientError as e:
         logger.info(f'Error: {e}')
 
-async def run(push_url,sessionid):
-    print("push_url:",push_url)
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+
+async def run(push_url, sessionid):
+    print("push_url:", push_url)
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal, sessionid)
     nerfreals[sessionid] = nerfreal
 
     pc = RTCPeerConnection()
@@ -312,15 +461,17 @@ async def run(push_url,sessionid):
             transceiver.direction = "sendonly"
 
     await pc.setLocalDescription(await pc.createOffer())
-    answer = await post(push_url,pc.localDescription.sdp)
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer,type='answer'))
+    answer = await post(push_url, pc.localDescription.sdp)
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer, type='answer'))
+
+
 ##########################################
 # os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 # os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'                                                    
 if __name__ == '__main__':
     mp.set_start_method('spawn')
     parser = argparse.ArgumentParser()
-    
+
     # audio FPS
     parser.add_argument('--fps', type=int, default=50, help="audio fps,must be 50")
     # sliding window left-middle-right length (unit: 20ms)
@@ -331,34 +482,35 @@ if __name__ == '__main__':
     parser.add_argument('--W', type=int, default=450, help="GUI width")
     parser.add_argument('--H', type=int, default=450, help="GUI height")
 
-    #musetalk opt
+    # musetalk opt
     parser.add_argument('--avatar_id', type=str, default='avator_1', help="define which avatar in data/avatars")
-    #parser.add_argument('--bbox_shift', type=int, default=5)
+    # parser.add_argument('--bbox_shift', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
 
     parser.add_argument('--customvideo_config', type=str, default='', help="custom action json")
 
-    parser.add_argument('--tts', type=str, default='edgetts', help="tts service type") #xtts gpt-sovits cosyvoice
+    parser.add_argument('--tts', type=str, default='edgetts', help="tts service type")  # xtts gpt-sovits cosyvoice
     parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural")
     parser.add_argument('--REF_TEXT', type=str, default=None)
-    parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880') # http://localhost:9000
+    parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')  # http://localhost:9000
     # parser.add_argument('--CHARACTER', type=str, default='test')
     # parser.add_argument('--EMOTION', type=str, default='default')
 
-    parser.add_argument('--model', type=str, default='musetalk') #musetalk wav2lip ultralight
+    parser.add_argument('--model', type=str, default='musetalk')  # musetalk wav2lip ultralight
 
-    parser.add_argument('--transport', type=str, default='rtcpush') #webrtc rtcpush virtualcam
-    parser.add_argument('--push_url', type=str, default='http://192.168.110.137:1985/rtc/v1/whip/?app=live&stream=livestream') #rtmp://localhost/live/livestream
+    parser.add_argument('--transport', type=str, default='rtcpush')  # webrtc rtcpush virtualcam
+    parser.add_argument('--push_url', type=str,
+                        default='http://192.168.110.137:1985/rtc/v1/whip/?app=live&stream=livestream')  # rtmp://localhost/live/livestream
 
-    parser.add_argument('--max_session', type=int, default=1)  #multi session count
+    parser.add_argument('--max_session', type=int, default=1)  # multi session count
     parser.add_argument('--listenport', type=int, default=8010, help="web listen port")
 
     opt = parser.parse_args()
-    #app.config.from_object(opt)
-    #print(app.config)
+    # app.config.from_object(opt)
+    # print(app.config)
     opt.customopt = []
-    if opt.customvideo_config!='':
-        with open(opt.customvideo_config,'r') as file:
+    if opt.customvideo_config != '':
+        with open(opt.customvideo_config, 'r') as file:
             opt.customopt = json.load(file)
 
     # if opt.model == 'ernerf':       
@@ -366,37 +518,40 @@ if __name__ == '__main__':
     #     model = load_model(opt)
     #     avatar = load_avatar(opt) 
     if opt.model == 'musetalk':
-        from musereal import MuseReal,load_model,load_avatar,warm_up
+        from musereal import MuseReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model()
-        avatar = load_avatar(opt.avatar_id) 
-        warm_up(opt.batch_size,model)      
+        avatar = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, model)
     elif opt.model == 'wav2lip':
-        from lipreal import LipReal,load_model,load_avatar,warm_up
+        from lipreal import LipReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model("./models/wav2lip.pth")
         avatar = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,model,256)
+        warm_up(opt.batch_size, model, 256)
     elif opt.model == 'ultralight':
-        from lightreal import LightReal,load_model,load_avatar,warm_up
+        from lightreal import LightReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model(opt)
         avatar = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,avatar,160)
+        warm_up(opt.batch_size, avatar, 160)
 
     # if opt.transport=='rtmp':
     #     thread_quit = Event()
     #     nerfreals[0] = build_nerfreal(0)
     #     rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
     #     rendthrd.start()
-    if opt.transport=='virtualcam':
+    if opt.transport == 'virtualcam':
         thread_quit = Event()
         nerfreals[0] = build_nerfreal(0)
-        rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
+        rendthrd = Thread(target=nerfreals[0].render, args=(thread_quit,))
         rendthrd.start()
 
     #############################################################################
-    appasync = web.Application(client_max_size=1024**2*100)
+    appasync = web.Application(client_max_size=1024 ** 2 * 100)
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
     appasync.router.add_post("/human", human)
@@ -405,48 +560,50 @@ if __name__ == '__main__':
     appasync.router.add_post("/record", record)
     appasync.router.add_post("/interrupt_talk", interrupt_talk)
     appasync.router.add_post("/is_speaking", is_speaking)
-    appasync.router.add_static('/',path='web')
+    appasync.router.add_static('/', path='web')
 
     # Configure default CORS settings.
     cors = aiohttp_cors.setup(appasync, defaults={
-            "*": aiohttp_cors.ResourceOptions(
-                allow_credentials=True,
-                expose_headers="*",
-                allow_headers="*",
-            )
-        })
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        )
+    })
     # Configure CORS on all routes.
     for route in list(appasync.router.routes()):
         cors.add(route)
 
-    pagename='webrtcapi.html'
-    if opt.transport=='rtmp':
-        pagename='echoapi.html'
-    elif opt.transport=='rtcpush':
-        pagename='rtcpushapi.html'
-    logger.info('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
-    logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:'+str(opt.listenport)+'/dashboard.html')
+    pagename = 'webrtcapi.html'
+    if opt.transport == 'rtmp':
+        pagename = 'echoapi.html'
+    elif opt.transport == 'rtcpush':
+        pagename = 'rtcpushapi.html'
+    logger.info('start http server; http://<serverip>:' + str(opt.listenport) + '/' + pagename)
+    logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:' + str(opt.listenport) + '/dashboard.html')
+
+
     def run_server(runner):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(runner.setup())
         site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
         loop.run_until_complete(site.start())
-        if opt.transport=='rtcpush':
+        if opt.transport == 'rtcpush':
             for k in range(opt.max_session):
                 push_url = opt.push_url
-                if k!=0:
-                    push_url = opt.push_url+str(k)
-                loop.run_until_complete(run(push_url,k))
-        loop.run_forever()    
-    #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
+                if k != 0:
+                    push_url = opt.push_url + str(k)
+                loop.run_until_complete(run(push_url, k))
+        loop.run_forever()
+        # Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
+
+
     run_server(web.AppRunner(appasync))
 
-    #app.on_shutdown.append(on_shutdown)
-    #app.router.add_post("/offer", offer)
+    # app.on_shutdown.append(on_shutdown)
+    # app.router.add_post("/offer", offer)
 
     # print('start websocket server')
     # server = pywsgi.WSGIServer(('0.0.0.0', 8000), app, handler_class=WebSocketHandler)
     # server.serve_forever()
-    
-    

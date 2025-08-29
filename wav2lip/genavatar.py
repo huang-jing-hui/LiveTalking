@@ -18,7 +18,7 @@ parser.add_argument('--nosmooth', default=False, action='store_true',
 parser.add_argument('--pads', nargs='+', type=int, default=[0, 10, 0, 0],
 					help='Padding (top, bottom, left, right). Please adjust to include chin at least')
 parser.add_argument('--face_det_batch_size', type=int,
-					help='Batch size for face detection', default=4)
+					help='Batch size for face detection', default=2)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'

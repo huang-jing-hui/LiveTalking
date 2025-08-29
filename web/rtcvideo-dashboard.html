@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数字人交互平台</title>
+    <!-- 外部 CSS 依赖 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <!-- 您的自定义 CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="dashboard-container">
+    <div class="row">
+        <div class="col-12">
+            <h1 class="text-center mb-4">数字人交互平台</h1>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- 视频区域 -->
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div>
+                        <span class="status-indicator status-disconnected" id="connection-status"></span>
+                        <span id="status-text">未连接</span>
+                    </div>
+                </div>
+                <div class="card-body p-0">
+                    <div class="video-container">
+                        <video id="rtc_media_player" autoplay playsinline></video>
+                        <div class="recording-indicator" id="recording-indicator">
+                            <div class="blink"></div>
+                            <span>录制中</span>
+                        </div>
+                    </div>
+                    <!-- 新增：本地视频容器 -->
+                    <div id="local-video-container" class="local-video-container">
+                        <video id="local_video_player" autoplay playsinline muted></video>
+                    </div>
+
+                    <div class="controls-container">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <button class="btn btn-primary w-100" id="btn_play">
+                                    <i class="bi bi-play-fill"></i> 开始连接
+                                </button>
+                                <button class="btn btn-danger w-100" id="stop" style="display: none;">
+                                    <i class="bi bi-stop-fill"></i> 停止连接
+                                </button>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <div class="d-flex">
+                                    <button class="btn btn-outline-primary flex-grow-1 me-2" id="btn_start_record">
+                                        <i class="bi bi-record-fill"></i> 开始录制
+                                    </button>
+                                    <button class="btn btn-outline-danger flex-grow-1" id="btn_stop_record" disabled>
+                                        <i class="bi bi-stop-fill"></i> 停止录制
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-12">
+                                <div class="video-size-control">
+                                    <label for="video-size-slider" class="form-label">视频大小调节: <span
+                                            id="video-size-value">100%</span></label>
+                                    <input type="range" class="form-range" id="video-size-slider" min="50" max="150"
+                                           value="100">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧交互 -->
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <ul class="nav nav-tabs card-header-tabs" id="interaction-tabs" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="chat-tab" data-bs-toggle="tab" data-bs-target="#chat"
+                                    type="button" role="tab" aria-controls="chat" aria-selected="true">对话模式
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="tts-tab" data-bs-toggle="tab" data-bs-target="#tts"
+                                    type="button" role="tab" aria-controls="tts" aria-selected="false">朗读模式
+                            </button>
+                        </li>
+                    </ul>
+                </div>
+                <div class="card-body">
+                    <div class="tab-content" id="interaction-tabs-content">
+                        <!-- 对话模式 -->
+                        <div class="tab-pane fade show active" id="chat" role="tabpanel" aria-labelledby="chat-tab">
+                            <div class="asr-container mb-3" id="chat-messages">
+                                <div class="asr-text system-message">
+                                    系统: 欢迎使用数字人原生合成,本系统可做到无需第三方云服务，请点击"开始连接"按钮开始对话。
+                                </div>
+                            </div>
+
+                            <form id="chat-form">
+                                <div class="input-group mb-3">
+                                    <textarea class="form-control" id="chat-message" rows="3"
+                                              placeholder="输入您想对数字人说的话..."></textarea>
+                                    <button class="btn btn-primary" type="submit">
+                                        <i class="bi bi-send"></i> 发送
+                                    </button>
+                                </div>
+                            </form>
+
+                            <div class="voice-record-btn" id="voice-record-btn">
+                                <i class="bi bi-mic-fill"></i>
+                            </div>
+                            <div class="voice-record-label">按住说话，松开发送</div>
+
+                            <!-- 更新：语音和视频通话按钮组 -->
+                            <div class="mt-4 d-flex justify-content-center gap-3">
+                                <div class="text-center">
+                                    <div class="voice-call-btn" id="voice-call-btn">
+                                        <i class="bi bi-telephone-fill"></i>
+                                    </div>
+                                    <div class="voice-call-label" id="voice-call-label">语音通话</div>
+                                </div>
+                                <div class="text-center">
+                                    <div class="voice-call-btn video" id="video-call-btn">
+                                        <i class="bi bi-camera-video-fill"></i>
+                                    </div>
+                                    <div class="voice-call-label" id="video-call-label">视频通话</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 朗读模式 -->
+                        <div class="tab-pane fade" id="tts" role="tabpanel" aria-labelledby="tts-tab">
+                            <form id="echo-form">
+                                <div class="mb-3">
+                                    <label for="message" class="form-label">输入要朗读的文本</label>
+                                    <textarea class="form-control" id="message" rows="6"
+                                              placeholder="输入您想让数字人朗读的文字..."></textarea>
+                                </div>
+                                <button type="submit" class="btn btn-primary w-100">
+                                    <i class="bi bi-volume-up"></i> 朗读文本
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>可远程推流的数字人,直接可用于直播</p>
+    </div>
+</div>
+
+<!-- 隐藏的会话ID -->
+<input type="hidden" id="sessionid" value="0">
+
+<!-- 外部 JS 依赖 -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="srs.sdk.js"></script>
+<!-- 您的自定义 JS -->
+<script src="app_images.js"></script>
+
+</body>
+</html>
